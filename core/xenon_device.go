@@ -317,9 +317,12 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 	if d.Version >= 3.5 {
 		// v3.5 uses 6699 frame with session key
 		packed, err = PackMessage6699(msg, d.sessionKey)
-	} else {
-		// v3.4 and earlier use 55AA frame with session key (v3.4) or static key
+	} else if d.Version >= 3.4 {
+		// v3.4 uses 55AA frame with session key
 		packed, err = PackMessage(msg, d.sessionKey)
+	} else {
+		// v3.3 and earlier use 55AA frame with static local key
+		packed, err = PackMessage(msg, d.LocalKey)
 	}
 
 	if err != nil {
@@ -341,9 +344,12 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 	if d.Version >= 3.5 {
 		// v3.5 uses 6699 frame with session key
 		unpacked, err = UnpackMessage6699(response[:n], d.sessionKey)
-	} else {
-		// v3.4 and earlier use 55AA frame
+	} else if d.Version >= 3.4 {
+		// v3.4 uses 55AA frame with session key
 		unpacked, err = UnpackMessage(response[:n], d.sessionKey)
+	} else {
+		// v3.3 and earlier use 55AA frame with static local key
+		unpacked, err = UnpackMessage(response[:n], d.LocalKey)
 	}
 
 	if err != nil {

@@ -18,6 +18,7 @@ func main() {
 	)
 
 	// Validate inputs
+	fmt.Printf("🔑 Local key: '%s' (length: %d)\n", LocalKey, len(LocalKey))
 	if len(LocalKey) != 16 {
 		log.Printf("WARNING: Local key should be 16 characters for v3.4+, got %d characters", len(LocalKey))
 	}
