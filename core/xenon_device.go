@@ -182,8 +182,15 @@ func (d *XenonDevice) connect() error {
 	}
 	d.socket = conn
 
-	if d.Version >= 3.4 {
+	// Only negotiate session key for v3.4, v3.5 might not need it for some devices
+	if d.Version == 3.4 {
 		return d.negotiateSessionKey()
+	}
+
+	// For v3.5, try without session key negotiation first
+	if d.Version >= 3.5 {
+		// Skip session key negotiation for v3.5 - try direct communication
+		return nil
 	}
 
 	return nil
@@ -215,7 +222,7 @@ func (d *XenonDevice) negotiateSessionKey() error {
 	}
 
 	// Step 2: Receive device nonce and HMAC
-	response := make([]byte, 1024)
+	response := make([]byte, 4096)
 	n, err := d.socket.Read(response)
 	if err != nil {
 		return fmt.Errorf("failed to read response to start message: %w", err)
@@ -292,6 +299,9 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 
 	if d.negotiatedSessionKey {
 		packed, err = PackMessage6699(msg, d.sessionKey)
+	} else if d.Version >= 3.5 {
+		// v3.5 without session key - use static key with 6699 frame
+		packed, err = PackMessage6699(msg, d.LocalKey)
 	} else {
 		packed, err = PackMessage(msg, d.LocalKey)
 	}
@@ -305,7 +315,7 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 		return nil, err
 	}
 
-	response := make([]byte, 1024)
+	response := make([]byte, 4096)
 	n, err := d.socket.Read(response)
 	if err != nil {
 		return nil, err
@@ -314,6 +324,9 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 	var unpacked *TuyaMessage
 	if d.negotiatedSessionKey {
 		unpacked, err = UnpackMessage6699(response[:n], d.sessionKey)
+	} else if d.Version >= 3.5 {
+		// v3.5 without session key - use static key with 6699 frame
+		unpacked, err = UnpackMessage6699(response[:n], d.LocalKey)
 	} else {
 		unpacked, err = UnpackMessage(response[:n], d.LocalKey)
 	}
