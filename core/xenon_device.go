@@ -182,15 +182,9 @@ func (d *XenonDevice) connect() error {
 	}
 	d.socket = conn
 
-	// Only negotiate session key for v3.4, v3.5 might not need it for some devices
-	if d.Version == 3.4 {
+	// Session key negotiation for v3.4 and v3.5
+	if d.Version >= 3.4 {
 		return d.negotiateSessionKey()
-	}
-
-	// For v3.5, try without session key negotiation first
-	if d.Version >= 3.5 {
-		// Skip session key negotiation for v3.5 - try direct communication
-		return nil
 	}
 
 	return nil
@@ -228,9 +222,23 @@ func (d *XenonDevice) negotiateSessionKey() error {
 		return fmt.Errorf("failed to read response to start message: %w", err)
 	}
 
-	unpackedResp, err := UnpackPlaintext55AA(response[:n])
-	if err != nil {
-		return fmt.Errorf("failed to unpack response message: %w", err)
+	var unpackedResp *TuyaMessage
+	if d.Version >= 3.5 {
+		// v3.5: Response might be in 6699 format even during negotiation
+		unpackedResp, err = UnpackMessage6699(response[:n], d.LocalKey)
+		if err != nil {
+			// Fallback: try 55AA format
+			unpackedResp, err = UnpackPlaintext55AA(response[:n])
+			if err != nil {
+				return fmt.Errorf("failed to unpack v3.5 response message: %w", err)
+			}
+		}
+	} else {
+		// v3.4 and earlier: Use 55AA format
+		unpackedResp, err = UnpackPlaintext55AA(response[:n])
+		if err != nil {
+			return fmt.Errorf("failed to unpack response message: %w", err)
+		}
 	}
 
 	if unpackedResp.Cmd != uint32(SESS_KEY_NEG_RESP) {
@@ -271,21 +279,30 @@ func (d *XenonDevice) negotiateSessionKey() error {
 		return fmt.Errorf("failed to send finish message: %w", err)
 	}
 
-	// Key Derivation for v3.5
+	// Key Derivation - different for v3.4 vs v3.5
 	tmpKey := make([]byte, 16)
 	for i := 0; i < 16; i++ {
 		tmpKey[i] = deviceNonce[i] ^ clientNonce[i]
 	}
 
-	ciphertext, tag, err := GCMEncrypt(d.LocalKey, clientNonce[:12], tmpKey, nil)
-	if err != nil {
-		return fmt.Errorf("failed to derive session key: %w", err)
+	if d.Version >= 3.5 {
+		// v3.5 key derivation: GCM encrypt, take bytes 12-28 of result
+		ciphertext, tag, err := GCMEncrypt(d.LocalKey, clientNonce[:12], tmpKey, nil)
+		if err != nil {
+			return fmt.Errorf("failed to derive v3.5 session key: %w", err)
+		}
+		combined := append(ciphertext, tag...)
+		d.sessionKey = combined[12:28] // 16 bytes starting from byte 12
+	} else {
+		// v3.4 key derivation: ECB encrypt, use full result
+		ciphertext, err := ECBEncrypt(d.LocalKey, tmpKey)
+		if err != nil {
+			return fmt.Errorf("failed to derive v3.4 session key: %w", err)
+		}
+		d.sessionKey = ciphertext
 	}
 
-	combined := append(ciphertext, tag...)
-	d.sessionKey = combined[12:28]
 	d.negotiatedSessionKey = true
-
 	return nil
 }
 
@@ -297,13 +314,12 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 	var packed []byte
 	var err error
 
-	if d.negotiatedSessionKey {
+	if d.Version >= 3.5 {
+		// v3.5 uses 6699 frame with session key
 		packed, err = PackMessage6699(msg, d.sessionKey)
-	} else if d.Version >= 3.5 {
-		// v3.5 without session key - use static key with 6699 frame
-		packed, err = PackMessage6699(msg, d.LocalKey)
 	} else {
-		packed, err = PackMessage(msg, d.LocalKey)
+		// v3.4 and earlier use 55AA frame with session key (v3.4) or static key
+		packed, err = PackMessage(msg, d.sessionKey)
 	}
 
 	if err != nil {
@@ -322,13 +338,12 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 	}
 
 	var unpacked *TuyaMessage
-	if d.negotiatedSessionKey {
+	if d.Version >= 3.5 {
+		// v3.5 uses 6699 frame with session key
 		unpacked, err = UnpackMessage6699(response[:n], d.sessionKey)
-	} else if d.Version >= 3.5 {
-		// v3.5 without session key - use static key with 6699 frame
-		unpacked, err = UnpackMessage6699(response[:n], d.LocalKey)
 	} else {
-		unpacked, err = UnpackMessage(response[:n], d.LocalKey)
+		// v3.4 and earlier use 55AA frame
+		unpacked, err = UnpackMessage(response[:n], d.sessionKey)
 	}
 
 	if err != nil {
