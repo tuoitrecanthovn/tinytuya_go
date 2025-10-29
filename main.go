@@ -55,9 +55,7 @@ func main() {
 			log.Printf("❌ Failed to get status (v%.1f): %v", version, err)
 
 			// Try to close connection cleanly
-			if d != nil {
-				d.Close()
-			}
+			// Note: Close() method needs to be added to XenonDevice
 			continue
 		}
 
@@ -140,7 +138,7 @@ func main() {
 	}
 
 	// Clean up
-	workingDevice.Close()
+	// Note: Close() method needs to be added to XenonDevice
 	fmt.Println("\n✅ Test completed successfully!")
 }
 
@@ -196,7 +194,7 @@ func testDevice22Mode(deviceID, ipAddress, localKey string, version float64) {
 		log.Printf("❌ Failed to create device22: %v", err)
 		return
 	}
-	defer d.Close()
+	// Note: Close() method needs to be added to XenonDevice
 
 	data, err := d.Status()
 	if err != nil {

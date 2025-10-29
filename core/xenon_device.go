@@ -324,3 +324,15 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 
 	return unpacked.Payload, nil
 }
+
+// Close closes the device connection and cleans up resources.
+func (d *XenonDevice) Close() error {
+	if d.socket != nil {
+		err := d.socket.Close()
+		d.socket = nil
+		d.negotiatedSessionKey = false
+		d.sessionKey = nil
+		return err
+	}
+	return nil
+}
