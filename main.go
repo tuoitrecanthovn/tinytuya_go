@@ -22,7 +22,7 @@ func main() {
 		log.Printf("WARNING: Local key should be 16 characters for v3.4+, got %d characters", len(LocalKey))
 	}
 
-	// Try different protocol versions in order of complexity
+	// Try different protocol versions - start with most compatible
 	versions := []float64{3.3, 3.4, 3.5}
 	var workingDevice *core.XenonDevice
 	var workingVersion float64
@@ -61,6 +61,7 @@ func main() {
 
 		fmt.Printf("🎉 SUCCESS with v%.1f!\n", version)
 		fmt.Printf("📊 Device status: %+v\n", data)
+		fmt.Printf("✨ Protocol v%.1f is working with this device!\n", version)
 
 		workingDevice = d
 		workingVersion = version
