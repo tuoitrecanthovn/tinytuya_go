@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"crypto/aes"
+	"crypto/cipher"
 	"crypto/md5"
 	"encoding/base64"
 	"errors"
@@ -94,4 +95,38 @@ func MD5(data []byte) []byte {
 	hash := md5.New()
 	hash.Write(data)
 	return hash.Sum(nil)
+}
+
+// GCMEncrypt encrypts data using AES-GCM.
+func GCMEncrypt(key, nonce, data, aad []byte) ([]byte, []byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, err
+	}
+	aesgcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+	ciphertext := aesgcm.Seal(nil, nonce, data, aad)
+	tag := ciphertext[len(ciphertext)-aesgcm.Overhead():]
+	ciphertext = ciphertext[:len(ciphertext)-aesgcm.Overhead()]
+	return ciphertext, tag, nil
+}
+
+// GCMDecrypt decrypts data using AES-GCM.
+func GCMDecrypt(key, nonce, ciphertext, tag, aad []byte) ([]byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aesgcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	combined := append(ciphertext, tag...)
+	plaintext, err := aesgcm.Open(nil, nonce, combined, aad)
+	if err != nil {
+		return nil, err
+	}
+	return plaintext, nil
 }

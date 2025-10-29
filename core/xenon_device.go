@@ -1,6 +1,9 @@
 package core
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -29,6 +32,8 @@ type XenonDevice struct {
 	dpsToRequest         map[string]interface{}
 	autoIP               bool
 	payloadDict          map[int]map[string]interface{}
+	sessionKey           []byte
+	negotiatedSessionKey bool
 }
 
 // NewXenonDevice creates a new XenonDevice.
@@ -85,6 +90,28 @@ func (d *XenonDevice) Status() (map[string]interface{}, error) {
 	err = json.Unmarshal(data, &result)
 	if err != nil {
 		return nil, err
+	}
+	return result, nil
+}
+
+// SetValue sets a single DPS value.
+func (d *XenonDevice) SetValue(dpsID string, value interface{}) (map[string]interface{}, error) {
+	payload, command := d.generatePayload(CONTROL, map[string]interface{}{dpsID: value})
+	msg := TuyaMessage{
+		Seqno:   d.seqno,
+		Cmd:     uint32(command),
+		Payload: payload,
+	}
+	d.seqno++
+	data, err := d.sendReceive(msg)
+	if err != nil {
+		return nil, err
+	}
+	var result map[string]interface{}
+	err = json.Unmarshal(data, &result)
+	if err != nil {
+		// It's common for control commands to return an empty or non-json payload
+		return nil, nil
 	}
 	return result, nil
 }
@@ -154,6 +181,104 @@ func (d *XenonDevice) connect() error {
 		return err
 	}
 	d.socket = conn
+
+	if d.Version >= 3.4 {
+		return d.negotiateSessionKey()
+	}
+
+	return nil
+}
+
+func (d *XenonDevice) negotiateSessionKey() error {
+	// Step 1: Send client nonce
+	clientNonce := make([]byte, 16)
+	_, err := rand.Read(clientNonce)
+	if err != nil {
+		return fmt.Errorf("failed to generate client nonce: %w", err)
+	}
+
+	startMsg := TuyaMessage{
+		Seqno:   d.seqno,
+		Cmd:     SESS_KEY_NEG_START,
+		Payload: clientNonce,
+	}
+	d.seqno++
+
+	packedStart, err := PackPlaintext55AA(startMsg)
+	if err != nil {
+		return fmt.Errorf("failed to pack start message: %w", err)
+	}
+
+	_, err = d.socket.Write(packedStart)
+	if err != nil {
+		return fmt.Errorf("failed to send start message: %w", err)
+	}
+
+	// Step 2: Receive device nonce and HMAC
+	response := make([]byte, 1024)
+	n, err := d.socket.Read(response)
+	if err != nil {
+		return fmt.Errorf("failed to read response to start message: %w", err)
+	}
+
+	unpackedResp, err := UnpackPlaintext55AA(response[:n])
+	if err != nil {
+		return fmt.Errorf("failed to unpack response message: %w", err)
+	}
+
+	if unpackedResp.Cmd != uint32(SESS_KEY_NEG_RESP) {
+		return fmt.Errorf("unexpected command in response: got %d, want %d", unpackedResp.Cmd, SESS_KEY_NEG_RESP)
+	}
+
+	deviceNonce := unpackedResp.Payload[:16]
+	hmacFromDevice := unpackedResp.Payload[16:]
+
+	// Verify HMAC
+	mac := hmac.New(sha256.New, d.LocalKey)
+	mac.Write(clientNonce)
+	expectedHMAC := mac.Sum(nil)
+
+	if !hmac.Equal(hmacFromDevice, expectedHMAC) {
+		return fmt.Errorf("HMAC verification failed")
+	}
+
+	// Step 3: Send HMAC of device nonce
+	mac.Reset()
+	mac.Write(deviceNonce)
+	hmacToDevice := mac.Sum(nil)
+
+	finishMsg := TuyaMessage{
+		Seqno:   d.seqno,
+		Cmd:     uint32(SESS_KEY_NEG_FINISH),
+		Payload: hmacToDevice,
+	}
+	d.seqno++
+
+	packedFinish, err := PackPlaintext55AA(finishMsg)
+	if err != nil {
+		return fmt.Errorf("failed to pack finish message: %w", err)
+	}
+
+	_, err = d.socket.Write(packedFinish)
+	if err != nil {
+		return fmt.Errorf("failed to send finish message: %w", err)
+	}
+
+	// Key Derivation for v3.5
+	tmpKey := make([]byte, 16)
+	for i := 0; i < 16; i++ {
+		tmpKey[i] = deviceNonce[i] ^ clientNonce[i]
+	}
+
+	ciphertext, tag, err := GCMEncrypt(d.LocalKey, clientNonce[:12], tmpKey, nil)
+	if err != nil {
+		return fmt.Errorf("failed to derive session key: %w", err)
+	}
+
+	combined := append(ciphertext, tag...)
+	d.sessionKey = combined[12:28]
+	d.negotiatedSessionKey = true
+
 	return nil
 }
 
@@ -162,7 +287,15 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 		return nil, err
 	}
 
-	packed, err := PackMessage(msg, d.LocalKey)
+	var packed []byte
+	var err error
+
+	if d.negotiatedSessionKey {
+		packed, err = PackMessage6699(msg, d.sessionKey)
+	} else {
+		packed, err = PackMessage(msg, d.LocalKey)
+	}
+
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +311,13 @@ func (d *XenonDevice) sendReceive(msg TuyaMessage) ([]byte, error) {
 		return nil, err
 	}
 
-	unpacked, err := UnpackMessage(response[:n], d.LocalKey)
+	var unpacked *TuyaMessage
+	if d.negotiatedSessionKey {
+		unpacked, err = UnpackMessage6699(response[:n], d.sessionKey)
+	} else {
+		unpacked, err = UnpackMessage(response[:n], d.LocalKey)
+	}
+
 	if err != nil {
 		return nil, err
 	}
